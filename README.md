@@ -19,9 +19,9 @@ Reverse engineering the display protocols for keyboard OLED/LCD screens to enabl
 ### Corsair Vanguard 96 (LCD)
 - **USB ID**: `1B1C:2B0D`
 - **Display**: Color LCD (likely 480x176 RGB565)
-- **Status**: Bragi protocol partially decoded, LCD resource 0x3F found (84,320 bytes), writes don't update display yet
+- **Status**: Bragi protocol partially decoded, LCD resource 0x3F found (84,320 bytes), writes don't update display yet. iCUE installer running in Windows VM — USB capture pending.
 - **Protocol**: Corsair Bragi protocol (handle-based resource system via HID)
-- **Next step**: Capture iCUE USB traffic in Windows VM to discover LCD write sequence
+- **Next step**: Complete iCUE install, capture USB traffic to discover LCD write sequence
 
 ## Project Structure
 
@@ -31,6 +31,7 @@ keyboard-oled-re/
 ├── findings.md                      # ROG Azoth X protocol findings (detailed)
 ├── azoth_oled.py                    # ROG Azoth X OLED control tool
 ├── azoth-x-capture-handoff.md       # Windows USB capture guide for Armoury Crate
+├── qemu_type.sh                     # Helper: type text into QEMU VM via monitor sendkey
 ├── pics/                            # Photo evidence organized by RE phase
 │   ├── 01-azoth-oled-probing/       # Initial HID probing & mode discovery
 │   ├── 02-azoth-oled-modes/         # Mode demos & framing experiments
@@ -38,7 +39,8 @@ keyboard-oled-re/
 │   ├── 04-steelseries-writes/       # OLED writes, animations, call sign
 │   ├── 05-corsair-lcd-probing/      # Corsair Vanguard 96 LCD probing
 │   ├── 06-corsair-boot-sequence/    # Corsair keyboard boot animation capture
-│   └── 07-corsair-post-boot/        # Post-boot LCD state
+│   ├── 07-corsair-post-boot/        # Post-boot LCD state
+│   └── 08-win11-vm-setup/           # Windows 11 VM install & iCUE setup (VNC captures)
 ├── ckb-next/                        # Corsair ckb-next source (gitignored)
 ├── vm/                              # Windows 11 VM (gitignored, see VM Setup)
 └── venv/                            # Python virtualenv (gitignored)
@@ -118,7 +120,8 @@ qemu-system-x86_64 \
   -device usb-ehci,id=usb -device usb-tablet,id=tablet0 \
   -device usb-host,vendorid=0x1b1c,productid=0x2b0d \
   -display gtk -vnc :0 \
-  -device virtio-net-pci,netdev=net0 -netdev user,id=net0 \
+  -device e1000,netdev=net0 \
+  -netdev user,id=net0 \
   -global driver=cfi.pflash01,property=secure,value=on \
   -audio driver=none \
   -monitor unix:vm/qemu-monitor.sock,server,nowait
@@ -126,10 +129,12 @@ qemu-system-x86_64 \
 
 **Key notes:**
 - Uses AHCI/SATA disk (not VirtIO) so Windows sees the drive without extra drivers
+- Uses **e1000 NIC** (not virtio-net-pci) — Windows has built-in e1000 drivers, no extras needed
 - `-vnc :0` enables VNC on port 5900 for programmatic control
 - `-device usb-host,vendorid=0x1b1c,productid=0x2b0d` passes the Corsair keyboard through
 - `-boot splash-time=15000` gives time to hit a key to boot from CD
 - TPM 2.0 + Secure Boot (OVMF ms variant) satisfies Windows 11 requirements
+- VM gets IP `10.0.2.15` via QEMU user-mode NAT (gateway `10.0.2.2`)
 
 ### Boot from CD (first install only)
 
@@ -143,6 +148,12 @@ for i in $(seq 1 30); do
 done
 ```
 
+### Windows 11 OOBE Notes
+
+- **Offline account bypass**: Windows 11 OOBE requires internet sign-in by default. At the "Let's connect you to a network" screen, press `Shift+F10` to open a command prompt, type `oobe\bypassnro`, and the VM will reboot. After reboot, an "I don't have internet" option appears.
+- **Local account**: Created as `ViolatorActual` with no password.
+- The OOBE Next buttons at 1280x800 resolution are at approximately y=680.
+
 ### Interact via VNC
 
 VNC bypasses QEMU's GTK mouse capture requirement, making it reliable for scripted control:
@@ -154,31 +165,81 @@ $VNC capture screenshot.png  # capture screen
 $VNC key enter               # send keypress
 ```
 
+**Known issue**: `vncdo type` sends `;` instead of `:` (colon). Use the QEMU monitor `sendkey` command for text containing colons (see `qemu_type.sh`).
+
+**Screenshot helper** (auto-incrementing filenames):
+```bash
+V="venv/bin/vncdo -s localhost:0"
+N(){ SNAP="vnc_$(printf '%03d' $(ls vnc_*.png 2>/dev/null | wc -l)).png"; $V capture "$SNAP"; echo "$SNAP"; }
+```
+
 ### Interact via QEMU Monitor
 
 ```bash
 # Send a command to the QEMU monitor
 echo "sendkey ret" | socat - UNIX-CONNECT:vm/qemu-monitor.sock
 
-# Take a screenshot (PPM format)
+# Take a screenshot (PPM format, full resolution)
 echo "screendump vm/snap.ppm" | socat - UNIX-CONNECT:vm/qemu-monitor.sock
 python3 -c "from PIL import Image; Image.open('vm/snap.ppm').save('vm/snap.png')"
+
+# Accept UAC prompts (VNC mouse clicks don't work on secure desktop)
+echo "sendkey alt-y" | socat - UNIX-CONNECT:vm/qemu-monitor.sock
+```
+
+### qemu_type.sh — Type Text via Monitor
+
+`vncdo type` has a colon mapping bug (sends `;` instead of `:`). The `qemu_type.sh` helper types arbitrary text via QEMU monitor `sendkey` commands, correctly handling colons, backslashes, quotes, and all special characters:
+
+```bash
+# Type a URL into the VM
+./qemu_type.sh 'https://example.com/path'
+# Then press Enter
+echo "sendkey ret" | socat - UNIX-CONNECT:vm/qemu-monitor.sock
 ```
 
 ### Run the VM (after install)
 
-Same as above but remove the `-cdrom` line and change boot to `-boot order=c`.
+Same as the install command but remove the `-cdrom` line and change boot to `-boot order=c`.
+
+### Download iCUE in the VM
+
+From a PowerShell prompt inside the VM (typed via `qemu_type.sh`):
+
+```powershell
+Invoke-WebRequest -Uri "https://www3.corsair.com/software/CUE_V5/public/modules/windows/installer/Install iCUE.exe" -OutFile "$env:USERPROFILE\Desktop\iCUE_setup.exe"
+Start-Process "$env:USERPROFILE\Desktop\iCUE_setup.exe"
+# UAC prompt: use Alt+Y via QEMU monitor (VNC can't click secure desktop)
+```
 
 ## Tools & Dependencies
 
-- Python 3.12 + virtualenv (`hidapi`, `Pillow`)
-- QEMU/KVM 8.2.2 with OVMF (UEFI) and swtpm (TPM 2.0)
-- `socat` for QEMU monitor socket
-- `vncdotool` for VNC-based VM control
-- `ckb-next` source as Corsair Bragi protocol reference
+- **Python 3.12** + virtualenv (`hidapi`, `Pillow`)
+- **QEMU/KVM 8.2.2** with OVMF (UEFI) and swtpm (TPM 2.0)
+- **socat** for QEMU monitor socket communication
+- **vncdotool** for VNC-based VM control (mouse clicks, screenshots)
+- **qemu_type.sh** (custom) for typing text into VM via QEMU monitor sendkey — works around vncdo colon bug
+- **ckb-next** source as Corsair Bragi protocol reference
+
+## Lessons Learned
+
+### VNC Automation Pitfalls
+- `vncdo type` maps `:` to `;` — use QEMU monitor `sendkey shift-semicolon` instead (wrapped in `qemu_type.sh`)
+- `vncdo type` also can't send `"` (double quotes) — use `sendkey shift-apostrophe`
+- UAC secure desktop prompts don't respond to VNC mouse clicks — use `sendkey alt-y` via QEMU monitor
+- VNC coordinate latency is ~250ms per `vncdo` invocation — no need for long sleeps between actions
+- Screenshot early and often for evidence logging
+
+### Windows 11 VM Tips
+- Use **e1000** NIC, not virtio-net-pci (no built-in Windows driver for virtio)
+- Use **AHCI/SATA** disk, not VirtIO (same reason)
+- `oobe\bypassnro` via Shift+F10 cmd prompt skips mandatory Microsoft account sign-in
+- Edge first-run sign-in modal blocks everything — use `Win+R` -> `cmd` to get a working shell
+- PowerShell quoting in cmd.exe is fragile — launch `powershell` interactively instead of `powershell -command '...'`
+- `curl.exe` in Windows cmd doesn't support single quotes — use double quotes or PowerShell `Invoke-WebRequest`
 
 ## Safety Notes
 
 - **ROG Azoth X**: Avoid `0x69` (OLED shutdown) and `0xFC-0xFF` (USB controller crash). Recovery requires physical mode switch.
 - **Corsair**: Bragi protocol writes appear safe; resource handles auto-close on timeout.
-- Always photograph display state before/after probing for evidence.
+- Always photograph/screenshot display state before and after probing for evidence.
