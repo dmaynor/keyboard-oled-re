@@ -27,13 +27,21 @@ Reverse engineering the display protocols for keyboard OLED/LCD screens to enabl
 
 ```
 keyboard-oled-re/
-├── README.md              # This file
-├── findings.md            # ROG Azoth X protocol findings (detailed)
-├── azoth_oled.py          # ROG Azoth X OLED control tool
-├── ckb-next/              # Corsair ckb-next source (gitignored, reference only)
-├── vm/                    # Windows 11 VM (gitignored, see VM Setup below)
-├── venv/                  # Python virtualenv (gitignored)
-└── *.jpg                  # Photo evidence (gitignored)
+├── README.md                        # This file
+├── findings.md                      # ROG Azoth X protocol findings (detailed)
+├── azoth_oled.py                    # ROG Azoth X OLED control tool
+├── azoth-x-capture-handoff.md       # Windows USB capture guide for Armoury Crate
+├── pics/                            # Photo evidence organized by RE phase
+│   ├── 01-azoth-oled-probing/       # Initial HID probing & mode discovery
+│   ├── 02-azoth-oled-modes/         # Mode demos & framing experiments
+│   ├── 03-steelseries-oled/         # SteelSeries Apex Pro Gen 3 discovery
+│   ├── 04-steelseries-writes/       # OLED writes, animations, call sign
+│   ├── 05-corsair-lcd-probing/      # Corsair Vanguard 96 LCD probing
+│   ├── 06-corsair-boot-sequence/    # Corsair keyboard boot animation capture
+│   └── 07-corsair-post-boot/        # Post-boot LCD state
+├── ckb-next/                        # Corsair ckb-next source (gitignored)
+├── vm/                              # Windows 11 VM (gitignored, see VM Setup)
+└── venv/                            # Python virtualenv (gitignored)
 ```
 
 ## Key Findings

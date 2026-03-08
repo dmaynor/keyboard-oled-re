@@ -24,8 +24,9 @@ Thumbs.db
 # ckb-next is a reference checkout (has its own git repo)
 ckb-next/
 
-# Photo evidence (large binary files, keep locally)
-*.jpg
+# Stray images in root (use pics/ directory instead)
+/*.jpg
+/*.png
 
 # Editor
 *.swp
