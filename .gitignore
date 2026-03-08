@@ -1,0 +1,35 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# VM directory (large disk images, transient state)
+vm/
+
+# Windows ISO
+*.iso
+
+# QEMU temp
+*.ppm
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ckb-next is a reference checkout (has its own git repo)
+ckb-next/
+
+# Photo evidence (large binary files, keep locally)
+*.jpg
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
