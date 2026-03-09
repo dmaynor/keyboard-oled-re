@@ -41,6 +41,12 @@ factory_dumps/
 output/*.ppm
 output/*_indices.png
 
+# Ghidra project database (large, auto-generated)
+ghidra_project/
+
+# Python virtual environment
+.venv/
+
 # Editor
 *.swp
 *.swo

@@ -542,14 +542,75 @@ python3 tools/lzw9_decode.py 30      # Frame 30
 
 All 60 frames decode with **zero errors**.
 
+## Ghidra Firmware Analysis (v1.18.42 vs v2.8.59)
+
+Both firmware versions analyzed with Ghidra 12.0.4 headless + PyGhidra. ARM Cortex-M33 @ flash base 0x08020000.
+
+### Summary
+
+| Metric | v1.18.42 ("Nord") | v2.8.59 |
+|--------|-------------------|---------|
+| Total functions | 1304 | 1324 (+20) |
+| Bragi handlers | 38 | 38 |
+| Property handlers | 37 | 36 |
+| Screen dispatchers | 5 | 5 |
+| Animation frames | 59 | 60 |
+| Bitmap table offset | 0x05ED28 | 0x06212C |
+
+### Key Findings
+
+**Bragi command handlers are structurally identical** between versions. The top handlers match 1:1 by command set:
+- File ops handler (SET/GET/UNBIND/WRITE_BEGIN/WRITE_CONT/READ/DESCRIBE): 1034B in both
+- Lifecycle handler (SET/GET/UNBIND/DESCRIBE/CREATE/DELETE/RESET): 1538B in both
+- RW handler: 1064B in both
+
+**One significant handler grew**: The property SET handler at v1:0x0003e004 (2704B) corresponds to v2:0x0003e670 (3004B), a +300 byte increase. This handler dispatches on `local_16` (command type) with cases 1-3 mapping to SET(1), GET(2), and session operations. The v2 version adds `RESET_FACTORY` (0x0F) command support.
+
+**Property handler v2 expanded**: The main property dispatcher grew from 3118B to 3432B (+314B). The v2 version adds a guard check `DAT_20079bc9 != '\0'` before certain operations (cases 0x10, 0x3b) — likely a "factory mode" or "safe mode" lockout.
+
+**Screen mode dispatchers unchanged**: All 5 dispatchers have identical mode ranges:
+- 0x1E-0x35 (main screen mode switch, 24 modes)
+- 0x20/0x25/0x29/0x2C (display content selector)
+- 0x2B/0x2D/0x2E (overlay modes)
+- 0x21/0x22/0x23 (sub-modes)
+- 0x27/0x28/0x29 (animation/transition modes)
+
+**Screen mode switch function** (`FUN_000433e4`/`FUN_00043d54`): Identical logic — sets `DAT_2001451d` (display mode index) then calls a screen refresh function. Each case maps a Bragi mode ID to an internal display index (0x1E→0, 0x1F→1, 0x20→2, etc.).
+
+**RAM layout shifted** but structure preserved:
+- v1 `DAT_20014534` → v2 `DAT_20014520` (screen initialized flag)
+- v1 `DAT_20014531` → v2 `DAT_2001451d` (current display mode)
+- v1 `DAT_200140c0` → v2 `DAT_200140b0` (operating state)
+
+**Only unique string in v1**: `../TouchGFX/target/generated/STM32DMA.cpp` — removed in v2 (DMA path refactored)
+
+### Implication for LCD Control
+
+The identical Bragi handler structure means **flashing v2.8.59 will not change the LCD protocol**. Both versions use the same command dispatch, same screen modes, same file operations. The display rendering path is purely internal — the Bragi protocol triggers mode switches that select which internal TouchGFX screen to render, but provides no direct pixel-push interface.
+
+The LCD can only be updated by:
+1. Writing a properly formatted TouchGFX bitmap resource to a file slot (28007)
+2. Triggering a mode switch that references that file
+3. Or by intercepting the SPI bus to the LCD controller directly
+
+### Analysis Files
+
+| File | Contents |
+|------|----------|
+| `firmware/ghidra_analysis_Nord_v1_18_42.json` | Full v1.18.42 analysis (functions, handlers, strings, decompiled code) |
+| `firmware/ghidra_analysis_Vanguard_v2_8_59.json` | Full v2.8.59 analysis |
+| `firmware/ghidra_fw_diff.txt` | Human-readable diff report |
+| `firmware/ghidra_fw_diff.json` | Machine-readable diff summary |
+| `firmware/ghidra_decompiled.txt` | Earlier decompiled C pseudocode (8 key functions) |
+| `firmware/ghidra_deep_analysis.txt` | Earlier deep analysis (dispatchers, xrefs, Bragi search) |
+
 ## Possible Next Steps
 
 1. **Build LZW9 compressor**: Create custom animation frames for LCD upload via firmware modification
-2. **Flash firmware v2.8.59**: May enable file-based LCD rendering (needs explicit user approval)
+2. **Write TouchGFX bitmap resource**: Construct a valid L8 LZW9 compressed bitmap and write to file 28007
 3. **Run firmware on STM32U5A9J-DK**: Dev board emulation for safe experimentation
-4. **Ghidra/radare2 analysis**: Full disassembly to find Bragi command dispatch and display render code
-5. **USB traffic capture**: Use usbmon/Wireshark with iCUE on Windows to capture working LCD update
-6. **SPI flash analysis**: Direct hardware access to the external OCTOSPI flash
+4. **USB traffic capture**: Use usbmon/Wireshark with iCUE on Windows to capture working LCD update
+5. **SPI flash analysis**: Direct hardware access to the external OCTOSPI flash
 
 ## Scripts Reference
 
@@ -570,16 +631,25 @@ All 60 frames decode with **zero errors**.
 | `lcd_correct_map_header.py` | Resource map header correction test |
 | `webhid_test.html` | WebHID test page for Chrome browser |
 | `tools/lzw9_decode.py` | TouchGFX L8 LZW9 decompressor for firmware animation frames |
+| `tools/decode_all_frames.py` | Decode ALL bitmaps (animations + icons) from both firmware versions |
+| `tools/ghidra_extract.py` | Initial Ghidra analysis — functions, strings, xrefs (PyGhidra) |
+| `tools/ghidra_deep_analysis.py` | Deep Ghidra analysis — dispatchers, Bragi handler search |
+| `tools/ghidra_decompile.py` | Decompile 8 key functions to C pseudocode |
+| `tools/ghidra_fw_diff.py` | Full firmware version diff — handlers, properties, screen modes |
 
 ## Firmware Files
 
 | File | Purpose |
 |------|---------|
-| `firmware/VANGUARD96_App_v2.8.59.bin` | Firmware binary (1.8MB ARM Cortex-M33) |
+| `firmware/VANGUARD96_App_v2.8.59.bin` | v2.8.59 firmware binary (1.8MB ARM Cortex-M33) |
+| `firmware/Nord_App_v1.18.42.bin` | v1.18.42 firmware binary (current on keyboard) |
 | `firmware/VANGUARD96_App_v2.8.59.json` | Firmware metadata (version, integrity hash) |
-| `VANGUARD96_2.8.59.zip` | Original firmware download from Corsair CDN |
+| `firmware/Nord_App_v1.18.42.json` | Firmware metadata for v1.18.42 |
 | `firmware/frames/frame_XX_data.bin` | Extracted compressed animation frame data |
 | `firmware/frames/frame_XX_extra.bin` | Extracted CLUT (palette) data per frame |
+| `output/animation_v1_18_42.gif` | Decoded 59-frame animation from v1.18.42 |
+| `output/animation_v2_8_59.gif` | Decoded 60-frame animation from v2.8.59 |
+| `output/icons_v*_*/` | Decoded icon assets from both firmware versions |
 
 ## Photo Documentation
 
