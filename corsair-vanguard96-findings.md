@@ -10,6 +10,34 @@
 - **RTOS**: Azure RTOS (ThreadX + USBX HID class)
 - **LCD Controller**: ILI-series, SPI-driven (no LTDC parallel RGB)
 - **Build**: Properties 19/20 suggest build date/time encoding
+- **Onboard Storage**: 8MB, 5 profiles
+- **Product Page**: https://www.corsair.com/us/en/explorer/gamer/keyboards/vanguard-96/
+
+## Operating Modes (from Corsair documentation)
+
+| Mode | Activation | Behavior |
+|------|-----------|----------|
+| **HW Mode** | No WebHub connected | Uses profiles/settings from onboard storage, full functionality |
+| **PlayStation Mode** | FN + Win (hold 5s) | 13+7 key limit, Win indicator blinks white 5x over 5s |
+| **Standard Mode** | FN + Win (hold 5s from PS mode) | Full functionality restored, indicator breathes white 2x over 2s |
+| **BIOS Mode** | Hold B+S while plugging USB | 6KRO + 5 modifiers, fixed 125Hz, no media keys |
+| **Game Mode** | Dedicated button | Win-lock, 1000Hz poll (8000Hz via WebHub), 1s ripple effect on button |
+| **Macro Recording** | FN + M or dial press in MR mode | Indicator breathes red; blinks red on stop |
+
+### Mode–Firmware Mapping (from Ghidra analysis)
+
+- HW Mode = normal state (`DAT_200140a0 = 0xA1`)
+- PlayStation Mode = likely triggers USB descriptor swap (13+7 key restriction)
+- BIOS Mode = recovery state, possibly `DAT_200140a0 = 0xAA` (bootloader-adjacent)
+- Game Mode = property 0x29 poll rate change + LED effect trigger
+- Screen modes 0x1E–0x35 = internal TouchGFX display selection (24 modes)
+
+### Key Observations
+
+- **No LCD customization API** — Corsair product page, manual, and WebHub provide zero mechanism for custom images/animations on the display. "iCUE coming soon" as of 2026-03.
+- **WebHub** is the only config tool — sets Bragi properties, triggers screen mode switches, but all rendering is firmware-internal TouchGFX.
+- **PlayStation mode blink patterns** (5x white / 2x white breathe) could be used to verify mode switching from Linux.
+- **BIOS mode (B+S on plug)** — untested via Bragi, may change HID interface behavior.
 
 ## USB Topology
 
@@ -654,5 +682,8 @@ The LCD can only be updated by:
 ## Photo Documentation
 
 All test results photographed in `pics/` subdirectories:
-- `pics/10-full-flow/` through `pics/20-correct-header/`
+- `pics/01-azoth-oled-probing/` through `pics/09-lcd-probing/` — initial device probing
+- `pics/10-full-flow/` through `pics/20-correct-header/` — Corsair LCD protocol tests
+- `pics/21-steelseries-test-images/` — SteelSeries OLED test images (red fill, "VIOLATOR ACTUAL" text)
+- `pics/22-vm-vnc/` — Win11 VM VNC screenshots
 - Binary file dumps in `factory_dumps/` and `resource_dumps/`
