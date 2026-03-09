@@ -18,10 +18,11 @@ Reverse engineering the display protocols for keyboard OLED/LCD screens to enabl
 
 ### Corsair Vanguard 96 (LCD)
 - **USB ID**: `1B1C:2B0D`
-- **Display**: Color LCD (likely 480x176 RGB565)
-- **Status**: Bragi protocol partially decoded, LCD resource 0x3F found (84,320 bytes), writes don't update display yet. iCUE installer running in Windows VM — USB capture pending.
-- **Protocol**: Corsair Bragi protocol (handle-based resource system via HID)
-- **Next step**: Complete iCUE install, capture USB traffic to discover LCD write sequence
+- **Display**: 248x170 IPS LCD (color), located above numpad
+- **Status**: Bragi protocol extensively decoded. File-based LCD control discovered via Web Hub JS reverse engineering. Successfully writing to active display file (62) — status overlay elements respond, main image area refresh mechanism still being determined. See [corsair-vanguard96-findings.md](corsair-vanguard96-findings.md) for full protocol details.
+- **Protocol**: Corsair Bragi old protocol (2-byte header, 1024-byte HID reports on interface 2)
+- **Image format**: Custom BMP with `[0x48, 0x00]` prefix, GRB pixel order, bottom-up rows, 4-byte timestamp suffix
+- **Next step**: Determine the exact activation trigger for main LCD canvas (likely mode transition or property write after file 62 update)
 
 ## Project Structure
 
@@ -29,8 +30,20 @@ Reverse engineering the display protocols for keyboard OLED/LCD screens to enabl
 keyboard-oled-re/
 ├── README.md                        # This file
 ├── findings.md                      # ROG Azoth X protocol findings (detailed)
-├── azoth_oled.py                    # ROG Azoth X OLED control tool
+├── corsair-vanguard96-findings.md   # Corsair Vanguard 96 LCD protocol findings (detailed)
+├── session-log-2026-03-08.md        # Session log: Win11 VM setup for iCUE capture
 ├── azoth-x-capture-handoff.md       # Windows USB capture guide for Armoury Crate
+├── azoth_oled.py                    # ROG Azoth X OLED control tool
+├── bragi_probe.py                   # Corsair Bragi protocol explorer
+├── lcd_write_test.py                # Early LCD write test via Bragi OPEN/WRITE
+├── lcd_read_full.py                 # Read full LCD resource 0x3F contents
+├── lcd_sw_mode_test.py              # Software mode switching test
+├── lcd_jpeg_test.py                 # JPEG image write via Bragi file ops
+├── lcd_direct_write.py              # corsair_lcd_tool protocol test (AIO cooler protocol)
+├── lcd_debug_write.py               # Multi-approach debug test (5 methods)
+├── lcd_v15_write.py                 # V1.5 protocol test (confirmed not supported)
+├── lcd_bragi_file_write.py          # Bragi file-based write with Web Hub file IDs
+├── lcd_session_write.py             # Session-based write with file 62 (latest)
 ├── qemu_type.sh                     # Helper: type text into QEMU VM via monitor sendkey
 ├── pics/                            # Photo evidence organized by RE phase
 │   ├── 01-azoth-oled-probing/       # Initial HID probing & mode discovery
@@ -38,9 +51,10 @@ keyboard-oled-re/
 │   ├── 03-steelseries-oled/         # SteelSeries Apex Pro Gen 3 discovery
 │   ├── 04-steelseries-writes/       # OLED writes, animations, call sign
 │   ├── 05-corsair-lcd-probing/      # Corsair Vanguard 96 LCD probing
-│   ├── 06-corsair-boot-sequence/    # Corsair keyboard boot animation capture
+│   ├── 06-corsair-boot-sequence/    # Corsair keyboard boot animation capture (50 frames)
 │   ├── 07-corsair-post-boot/        # Post-boot LCD state
-│   └── 08-win11-vm-setup/           # Windows 11 VM install & iCUE setup (VNC captures)
+│   ├── 08-win11-vm-setup/           # Windows 11 VM install & iCUE setup (VNC captures)
+│   └── 09-lcd-probing/              # LCD protocol probing evidence (48 photos)
 ├── ckb-next/                        # Corsair ckb-next source (gitignored)
 ├── vm/                              # Windows 11 VM (gitignored, see VM Setup)
 └── venv/                            # Python virtualenv (gitignored)
@@ -66,12 +80,16 @@ keyboard-oled-re/
 4. Display updates immediately - call sign "VIOLATOR ACTUAL" successfully rendered
 
 ### Corsair Vanguard 96 Bragi Protocol
-- Uses handle-based resource system (open handle, write data, close handle)
-- `BRAGI_MAGIC = 0x08`, commands: SET(0x01), GET(0x02), OPEN_HANDLE(0x0d), WRITE_DATA(0x06)
-- Resource `0x3F` = LCD framebuffer (84,320 bytes)
-- Resource `0x01` = RGB LED lighting
-- Writing to 0x3F doesn't update display - likely missing an init/commit sequence
-- Need to capture iCUE traffic to find the missing steps
+- Old Bragi protocol (2-byte header): `[0x08, cmdId, ...payload]` padded to 1024 bytes
+- 4 USB interfaces; Bragi on interface 2 (1024-byte HID reports)
+- File-based display system discovered via Web Hub JS reverse engineering:
+  - File **28007** = default screen resource (config or image data)
+  - File **62** = active display (controls what LCD shows)
+  - Resource **0x3F** = LCD framebuffer (84,320 bytes = 248x170x2 RGB565)
+- **Session command (0x1B)** establishes host session before file operations
+- Custom BMP format: `[0x48, 0x00]` prefix + BMP header + GRB pixel data + LE32 timestamp
+- **Current status**: Successfully writing to file 62 (active display) — LCD status overlays respond (lock icon, polling rate, key backlighting changed). Main image canvas refresh trigger still being determined.
+- Full protocol details: [corsair-vanguard96-findings.md](corsair-vanguard96-findings.md)
 
 ## VM Setup (for Corsair USB traffic capture)
 
@@ -241,5 +259,5 @@ Start-Process "$env:USERPROFILE\Desktop\iCUE_setup.exe"
 ## Safety Notes
 
 - **ROG Azoth X**: Avoid `0x69` (OLED shutdown) and `0xFC-0xFF` (USB controller crash). Recovery requires physical mode switch.
-- **Corsair**: Bragi protocol writes appear safe; resource handles auto-close on timeout.
+- **Corsair**: Bragi file writes are generally safe. **Avoid SET property 0x3E** (causes USB protocol error and device disconnect). Stale handles from crashed scripts can block subsequent file operations — always close/unbind handles first. File 28007 corruption is recoverable via DELETE + CREATE + WRITE.
 - Always photograph/screenshot display state before and after probing for evidence.
