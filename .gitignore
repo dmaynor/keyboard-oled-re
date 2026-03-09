@@ -37,6 +37,10 @@ firmware/
 resource_dumps/
 factory_dumps/
 
+# Intermediate decoder output (keep curated images only)
+output/*.ppm
+output/*_indices.png
+
 # Editor
 *.swp
 *.swo

@@ -442,10 +442,110 @@ TouchGFX runs its own render loop with hardware DMA2D acceleration. The animatio
 "ux_slave_class_hid"
 ```
 
+## TouchGFX L8 LZW9 Image Decompression (SOLVED)
+
+All 60 animation frames and 3 icon bitmaps successfully decompressed from the firmware binary.
+
+### Animation Content
+- **Corsair Sail logo** centered on dark background
+- **Animated rainbow ring** rotating around the logo (magenta → cyan → yellow cycling)
+- 60 frames at 248×170 pixels, ~6° rotation per frame
+- Output: [`output/animation.gif`](output/animation.gif)
+
+### Compression Format: L8 LZW9
+- **L8**: 8-bit indexed color — each pixel is a palette index (0-255)
+- **LZW9**: LZW compression with 9-bit codes (max 512 dictionary entries)
+- **Per-frame CLUT**: Each frame has its own RGB565 palette (up to 256 colors)
+- **Compression ratio**: ~42% of raw L8, ~21% of raw RGB565
+
+### Bitmap Table (file offset 0x06212C)
+66 entries × 20 bytes each:
+```
+[pixel_ptr:u32]   — flash address of compressed pixel data
+[clut_ptr:u32]    — flash address of CLUT (Color Look-Up Table)
+[width:u16]       — pixel width
+[height:u16]      — pixel height
+[solid_rect:u32]  — solid rectangle info
+[type_info:u32]   — format/flags
+```
+Pointers are flash addresses — subtract `0x08020000` for file offsets.
+
+### CLUT Structure (per frame, ~680-692 bytes)
+```
+Header (4 bytes):
+  [format:u8]       — image format (L8 = indexed)
+  [compression:u8]  — compression type (LZW9)
+  [palette_size:u16_LE] — number of palette entries
+
+Block Offset Table (num_blocks × 4 bytes):
+  Per entry:
+    [max_literal:u8]    — highest literal code for this block (0..254)
+    [offset_BE24:3B]    — big-endian 24-bit byte offset into pixel data
+
+Palette (palette_count × 2 bytes):
+  RGB565 little-endian entries (up to 256)
+```
+Layout: `header(4) + BOT(num_blocks×4) + palette(palette_count×2)`
+
+For 248×170 images: 43 blocks × 4 = 172 bytes BOT, typically 256 × 2 = 512 bytes palette.
+
+### Block Size Calculation (CRITICAL)
+The firmware computes block size as:
+```
+rows_per_block = 1024 / width    (integer division)
+block_pixels = rows_per_block × width
+```
+For 248px width: `1024 / 248 = 4` rows → `4 × 248 = 992` pixels per block (**NOT 1024**).
+
+248×170 image → 42 full blocks (992 px each) + 1 partial block (656 px) = 43 blocks total.
+
+### 9-Bit Code Extraction
+Non-obvious bit-packing scheme (from firmware at 0x027F4):
+```python
+b0 = data[byte_pos]
+b1 = data[byte_pos + 1]
+code = (b0 >> bit_pos) | (((b1 << (7 - bit_pos)) & 0xFF) << 1)
+
+# Advance: byte_pos += 1, bit_pos += 1
+# When bit_pos wraps past 7: bit_pos = 0, byte_pos += 1 extra
+```
+Each code consumes 9 bits via a 2-byte window with cycling bit position (0-7).
+
+### LZW9 Algorithm Details
+- **Dictionary**: 512 max entries, 4 bytes each `{character:u8, length:u8, prefixIndex:u16}`
+- **Per-block dictionary**: Codes 0..`max_literal` are literal palette indices
+- **Dictionary growth**: New entries start at `max_literal + 1`, grow to 511 max
+- **No clear code**: Dictionary fills to 512 and stops growing (no reset)
+- **KwKwK special case**: Standard LZW handling when code == next_code
+- Each block has its own independent dictionary (reset between blocks)
+
+### Key Firmware Functions
+| Function | File Offset | Description |
+|----------|-------------|-------------|
+| Compression dispatch | 0x024A0C | Routes format×compression via TBB instruction |
+| LZW9 blitCopy (RGB565) | 0x02763C | Main decompressor (vtable[2] of DecompressorL8_LZW9) |
+| LZW9 vtable | 0x063454 | Virtual function table for DecompressorL8_LZW9 |
+| RLE decompressor | 0x0265D0 | Alternative compression handler |
+| L4 decompressor | ~0x025400 | 4-bit indexed format handler |
+
+### Decoder Tool
+[`tools/lzw9_decode.py`](tools/lzw9_decode.py) — Complete Python decoder.
+
+Usage:
+```bash
+# Decode single frame
+python3 tools/lzw9_decode.py 0       # Frame 0
+python3 tools/lzw9_decode.py 30      # Frame 30
+
+# Outputs PPM to output/ directory
+```
+
+All 60 frames decode with **zero errors**.
+
 ## Possible Next Steps
 
-1. **Flash firmware v2.8.59**: May enable file-based LCD rendering (needs explicit user approval)
-2. **Decompress animation frames**: Reverse the TouchGFX L8 compression to extract frame images
+1. **Build LZW9 compressor**: Create custom animation frames for LCD upload via firmware modification
+2. **Flash firmware v2.8.59**: May enable file-based LCD rendering (needs explicit user approval)
 3. **Run firmware on STM32U5A9J-DK**: Dev board emulation for safe experimentation
 4. **Ghidra/radare2 analysis**: Full disassembly to find Bragi command dispatch and display render code
 5. **USB traffic capture**: Use usbmon/Wireshark with iCUE on Windows to capture working LCD update
@@ -469,6 +569,7 @@ TouchGFX runs its own render loop with hardware DMA2D acceleration. The animatio
 | `lcd_notification_monitor.py` | Second HID endpoint notification monitoring |
 | `lcd_correct_map_header.py` | Resource map header correction test |
 | `webhid_test.html` | WebHID test page for Chrome browser |
+| `tools/lzw9_decode.py` | TouchGFX L8 LZW9 decompressor for firmware animation frames |
 
 ## Firmware Files
 

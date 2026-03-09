@@ -19,10 +19,11 @@ Reverse engineering the display protocols for keyboard OLED/LCD screens to enabl
 ### Corsair Vanguard 96 (LCD)
 - **USB ID**: `1B1C:2B0D`
 - **Display**: 248x170 IPS LCD (color), located above numpad
-- **Status**: Bragi protocol extensively decoded. File-based LCD control discovered via Web Hub JS reverse engineering. Successfully writing to active display file (62) — status overlay elements respond, main image area refresh mechanism still being determined. See [corsair-vanguard96-findings.md](corsair-vanguard96-findings.md) for full protocol details.
+- **MCU**: STM32U5A9 (Cortex-M33 @ 160MHz, 4MB flash, 2.5MB SRAM)
+- **Status**: Bragi protocol extensively decoded. **TouchGFX L8 LZW9 image compression fully reverse-engineered** — all 60 animation frames decoded from firmware binary (Corsair Sail logo with animated rainbow ring). See [corsair-vanguard96-findings.md](corsair-vanguard96-findings.md) for full protocol details.
 - **Protocol**: Corsair Bragi old protocol (2-byte header, 1024-byte HID reports on interface 2)
-- **Image format**: Custom BMP with `[0x48, 0x00]` prefix, GRB pixel order, bottom-up rows, 4-byte timestamp suffix
-- **Next step**: Determine the exact activation trigger for main LCD canvas (likely mode transition or property write after file 62 update)
+- **Firmware analysis**: Flash base 0x08020000, TouchGFX bitmap table at 0x06212C, LZW9 decompressor at 0x02763C
+- **Next step**: Build LZW9 compressor to create custom animation frames for LCD upload
 
 ## Project Structure
 
@@ -55,6 +56,12 @@ keyboard-oled-re/
 │   ├── 07-corsair-post-boot/        # Post-boot LCD state
 │   ├── 08-win11-vm-setup/           # Windows 11 VM install & iCUE setup (VNC captures)
 │   └── 09-lcd-probing/              # LCD protocol probing evidence (48 photos)
+├── tools/                           # Analysis & decode tools
+│   └── lzw9_decode.py               # TouchGFX L8 LZW9 decompressor
+├── output/                          # Decoded firmware images
+│   ├── animation.gif                # All 60 frames as animated GIF
+│   ├── frame_000_1x.png             # Frame 0 at native 248x170
+│   └── frame_*_3x.png              # Key frames at 3x upscale
 ├── ckb-next/                        # Corsair ckb-next source (gitignored)
 ├── vm/                              # Windows 11 VM (gitignored, see VM Setup)
 └── venv/                            # Python virtualenv (gitignored)
@@ -86,10 +93,20 @@ keyboard-oled-re/
   - File **28007** = default screen resource (config or image data)
   - File **62** = active display (controls what LCD shows)
   - Resource **0x3F** = LCD framebuffer (84,320 bytes = 248x170x2 RGB565)
-- **Session command (0x1B)** establishes host session before file operations
-- Custom BMP format: `[0x48, 0x00]` prefix + BMP header + GRB pixel data + LE32 timestamp
-- **Current status**: Successfully writing to file 62 (active display) — LCD status overlays respond (lock icon, polling rate, key backlighting changed). Main image canvas refresh trigger still being determined.
 - Full protocol details: [corsair-vanguard96-findings.md](corsair-vanguard96-findings.md)
+
+### Corsair Vanguard 96 Firmware Image Decompression (SOLVED)
+- **TouchGFX L8 LZW9** — 9-bit LZW with per-block dictionaries
+- Firmware binary: STM32U5A9, flash base **0x08020000** (128KB bootloader offset)
+- 60 animation frames at 248x170, each with per-frame RGB565 palette
+- **CLUT structure**: `[format, compression, size]` header + block offset table + palette
+  - Block offset entries: `[max_literal(u8), offset_BE24(3B)]`
+  - Palette: RGB565 little-endian, up to 256 entries
+- **Block size**: `(1024 / width) * width` pixels (992 for 248px wide, NOT 1024)
+- **9-bit code extraction**: byte-pair reads with cycling bit position (0-7)
+- No clear code — dictionary fills to 512 entries and stops growing
+- Decoder: [`tools/lzw9_decode.py`](tools/lzw9_decode.py) — zero errors on all 60 frames
+- Output: Corsair Sail logo with animated rainbow ring → [`output/animation.gif`](output/animation.gif)
 
 ## VM Setup (for Corsair USB traffic capture)
 
