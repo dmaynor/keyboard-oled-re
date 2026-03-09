@@ -28,6 +28,15 @@ ckb-next/
 /*.jpg
 /*.png
 
+# Firmware binaries (do not redistribute vendor firmware)
+firmware/
+*.zip
+*.bin
+
+# Raw resource/factory dumps
+resource_dumps/
+factory_dumps/
+
 # Editor
 *.swp
 *.swo

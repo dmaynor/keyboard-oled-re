@@ -3,86 +3,239 @@
 ## Device Info
 - **Product**: Corsair CORSAIR VANGUARD 96 Mechanical Gaming Keyboard
 - **USB ID**: `1B1C:2B0D`
-- **Display**: 248x170 IPS LCD (color)
-- **Retail Name**: "K70 Wired Mechanical Gaming Keyboard" / "VANGUARD 96"
+- **Display**: 248x170 IPS LCD (color), reports 320x170 via properties
+- **Firmware**: v1.18.42 (current), v2.8.59 available from Corsair CDN
+- **MCU**: STM32U5A9 (ARM Cortex-M33, 160MHz, 4MB flash, 2.5MB SRAM)
+- **UI Framework**: ST TouchGFX with DMA2D (Chrom-ART) hardware acceleration
+- **RTOS**: Azure RTOS (ThreadX + USBX HID class)
+- **LCD Controller**: ILI-series, SPI-driven (no LTDC parallel RGB)
+- **Build**: Properties 19/20 suggest build date/time encoding
 
 ## USB Topology
 
 4 HID interfaces:
 
-| Interface | hidraw | Report Size | Purpose |
-|-----------|--------|-------------|---------|
-| IF#0 (input0) | hidraw0 | 32 bytes | Standard keyboard HID |
-| IF#1 (input1) | hidraw1 | 32 bytes | NKRO / media keys |
-| IF#2 (input2) | hidraw2 | **1024 bytes** | **Bragi protocol** (vendor) |
-| IF#3 (input3) | hidraw3 | 32 bytes | Rotary dial |
+| Interface | hidraw | Report Size | Usage Page | Usage | Purpose |
+|-----------|--------|-------------|------------|-------|---------|
+| IF#0 (input0) | hidraw0 | varies | 0x0001 | 0x02 | Mouse/multimedia control |
+| IF#1 (input1) | hidraw1 | varies | 0x0001 | 0x06 | Keyboard HID |
+| IF#2 (input2) | hidraw2 | **1024 bytes** | **0xFF42** | **0x01** | **Bragi command endpoint** |
+| IF#3 (input3) | hidraw3 | **64 bytes** | **0xFF42** | **0x02** | **Notification endpoint** (silent) |
 
-**Note**: hidraw numbers can shift after device crash/reset. Use uevent matching (`VANGUARD` + `input2`) to find the Bragi interface reliably.
+**Note**: hidraw numbers shift after device crash/reset. Use uevent matching (`VANGUARD` + `input2`) for command endpoint.
+
+### Notification Endpoint (IF#3)
+- Tested extensively: **zero notifications received** during all operations
+- Monitored during: mode switches, file writes, property changes, cookie updates
+- Writing to this endpoint succeeds but produces no response
+- Web Hub JS expects notifications here (PropertyValueChange, KeyPress, etc.) but device doesn't send any
 
 ## Bragi Protocol (Old Format, 2-byte Header)
 
-This device uses the "old" Bragi protocol (VER1_0). `BragiVersion` property (261) returns 0.
+This device uses the "old" Bragi protocol (VER1_0). `BragiVersion` property (96) returns 0.
 
 ### Packet Format
 ```
-Outgoing: [0x00 (HID report ID)] + [0x08 + subDevAddr, cmdId, ...payload] padded to 1024 bytes
+Outgoing: [0x00 (HID report ID)] + [0x08, cmdId, ...payload] padded to 1024 bytes
 Response: [0x00, cmdId, status, ...data] (1024 bytes from device)
 ```
 
 - `0x08` = `Device_Itself` constant
-- `status` byte: `0x00` = success, `0x06` = error/invalid operation
+- `status` byte: `0x00` = success, various error codes
 
-### Command IDs
+### Status Codes
+| Code | Meaning |
+|------|---------|
+| 0x00 | Success |
+| 0x01 | Invalid Argument Value |
+| 0x02 | Insufficient Buffer Size |
+| 0x03 | Invalid State |
+| 0x04 | Command Not Supported |
+| 0x05 | Property Not Supported |
+| 0x06 | Invalid Device Address |
+| 0x07 | Hardware Error |
+| 0x09 | Invalid Operation |
 
-| ID | Name | Payload | Notes |
-|----|------|---------|-------|
-| 0x01 | SET | `[propId_LE16, value_bytes...]` | Set property |
-| 0x02 | GET | `[propId_LE16]` | Get property |
-| 0x05 | UNBIND/CLOSE | `[count, bufferIdx...]` or `[handle, 0x00]` | Close handle / unbind buffers |
-| 0x06 | WRITE_BEGIN | `[bufferIdx, totalLen_LE32, data...]` | First write chunk |
-| 0x07 | WRITE_CONT | `[bufferIdx, data...]` | Continuation chunks |
-| 0x08 | READ | `[bufferIdx]` | Read from buffer |
-| 0x09 | DESCRIBE | `[bufferIdx]` | Get buffer size |
-| 0x0B | CREATE | `[fileId_LE16]` | Create file |
-| 0x0C | DELETE | `[fileId_LE16]` | Delete file |
-| 0x0D | OPEN | `[bufferIdx, fileId_LE16]` | Open file into buffer |
-| 0x1B | SESSION | `[0x01, token[4], 0x00]` | Start host session |
+### Complete Command IDs
 
-### Properties
+| ID | Hex | Name | Payload | Notes |
+|----|-----|------|---------|-------|
+| 1 | 0x01 | SET_PROPERTY | `[propId_LE16, value_bytes...]` | Set property |
+| 2 | 0x02 | GET_PROPERTY | `[propId_LE16]` | Get property, value at resp[3:] |
+| 3 | 0x03 | GET_MULTIPLE | `[propIds...]` | Batch property get |
+| 5 | 0x05 | UNBIND | `[handle, 0x00]` | Close handle/unbind buffer |
+| 6 | 0x06 | WRITE_BEGIN | `[bufferIdx, totalLen_LE32, data...]` | First write chunk |
+| 7 | 0x07 | WRITE_CONT | `[bufferIdx, data...]` | Continuation chunks |
+| 8 | 0x08 | READ | `[bufferIdx]` | Read from buffer, data at resp[3:] |
+| 9 | 0x09 | DESCRIBE | `[bufferIdx]` | Get size: resp[5:9] = actual size |
+| 10 | 0x0A | CALIBRATION | `[mode, type]` | Magnetic switch calibration only |
+| 11 | 0x0B | CREATE_FILE | `[fileId_LE16]` | Create file |
+| 12 | 0x0C | DELETE_FILE | `[fileId_LE16]` | Delete file |
+| 13 | 0x0D | OPEN_FILE | `[bufferIdx, fileId_LE16]` | Open file into buffer |
+| 15 | 0x0F | RESET_FACTORY | `[mode]` | Modes 1-9 all return OK |
+| 18 | 0x12 | PING | `[0x01, 0x00]` | Pairing/ping |
+| 27 | 0x1B | SESSION | `[0x01, token[4], 0x00]` | Start host session |
 
-| Property ID | Name | Read Value | Notes |
-|-------------|------|------------|-------|
-| 0x01 (1) | Mode | 1 or 4 | Operating mode |
-| 0x03 (3) | Operating Mode | 1=SELF_OPERATED, 2=HOST_CONTROLLED | **Key for LCD control** |
-| 0x0105 (261) | BragiVersion | 0 | Old protocol, no V1.5 support |
-| 0xF0 (240) | Startup Animation | varies | Screen startup animation setting |
-| 0xF2 (242) | Width | 320 | LCD width (display reports 320, actual canvas is 248) |
-| 0xF3 (243) | Height | 170 | LCD height |
-| 0xE6 (230) | Screen Present | 1 | Has screen = true |
-| 0x40 (64) | Unknown | 62 (0x3E) | Points to file 62? |
-| 0x41 (65) | Unknown | 1 | LCD-related toggle |
-| 0x107 (263) | Screen Index | — | Screen widget index (no response in old protocol) |
+**Note**: Command 0x0E (14) does not exist. No commands between OPEN(0x0D) and RESET(0x0F).
 
-### Files and Resources
+### V1.5 Protocol (NOT Supported)
+- 4-byte header: `[subDevAddr, direction(1=req), sessionId, cmdId]`
+- **All V1.5 commands return None** — device does not respond
+- Confirmed: this device only speaks V1.0 (2-byte header)
 
-| ID | Type | Size | Purpose |
-|----|------|------|---------|
-| 0x3F (63) | Resource | 84,320 bytes | LCD framebuffer (248x170x2 = RGB565) |
-| 0x3E (62) | File | Variable | **Active display file** — controls what LCD shows |
-| 0x6D67 (28007) | File | 4 bytes (default) | Default screen resource config |
-| 0x01 | Resource | varies | RGB LED lighting data |
+## Properties (Complete Scan 0-300)
 
-### File 28007 (Default Screen Resource)
-- Default content: `[56, 0, 0, 0]` (4 bytes)
-- Byte 0: Format type — `56` = static image, `102` = GIF
-- Bytes 1-3: Resource pointer / flags
-- Listed in device config as `defaultScreenResources: [28007]`
+54 responsive properties found. Key ones:
 
-### File 62 (Active Display)
-- Controls what the LCD shows
-- `selectWidget` in Web Hub reads a resource file and writes its content here
-- Initially returns error 0x06 on OPEN — requires a stale handle to be closed first
-- **Successfully opened and written** after closing stale handles and proper sequencing
+| Property | Name | Value | Raw | Notes |
+|----------|------|-------|-----|-------|
+| 1 | Device Status | 4 | `04 00 00 00` | |
+| 2 | Polling Rate | 1000 | `e8 03 00 00` | 1000ms default |
+| 3 | **Operating Mode** | 1 | `01 00 00 00` | **1=SELF, 2=HOST, 3=BOOTLOADER** |
+| 4 | Connection Type | 0 | `00 00 00 00` | |
+| 9 | Battery/Charging | 1 | `01 00 00 00` | |
+| 10 | Battery Level | 5 | `05 00 00 00` | |
+| 17 | Vendor ID | 0x1B1C | `1c 1b 00 00` | Corsair |
+| 18 | Product ID | 0x2B0D | `0d 2b 00 00` | Vanguard 96 |
+| 19 | FW Build Date | | `01 12 2a 00` | Version/date encoding |
+| 20 | FW Build Time | | `01 06 0c 00` | Version/time encoding |
+| 56 | Hardware Layout | 5 | `05 00 00 00` | |
+| 57 | Connection Count | 1 | `01 00 00 00` | |
+| 61 | Storage Size | 0x02000000 | `00 00 00 02` | 33MB? |
+| 62 | Max File Size | 0x01E580 | `00 80 e5 01` | ~124KB |
+| 64 | | 0xCC | `cc 00 00 00` | 204 |
+| 65 | | 1 | `01 00 00 00` | Read-only (SET returns 0x05) |
+| 96 | **Bragi Version** | **0** | `00 00 00 00` | **Oldest protocol version** |
+| 150 | Device Features | 7 | `07 00 00 00` | |
+| 226 | LED Color 1 | 0x00FF00 | `00 00 ff 00` | Settable |
+| 228 | LED Color 2 | 0x00FF00 | `00 00 ff 00` | Settable |
+| 234 | Animation Timing | 1000 | `e8 03 00 00` | Settable, 1000ms |
+| 242 | **Screen Width** | **320** | `40 01 00 00` | Full panel width |
+| 243 | **Screen Height** | **170** | `aa 00 00 00` | |
+| 260 | | 7 | `07 00 00 00` | Settable |
+| 261 | | 0 | `00 00 00 00` | Read-only |
+
+Properties that accept SET (status 0): 225, 226, 227, 228, 234, 235, 238, 239, 251-260
+Properties that reject SET (status 5): 65, 230, 261, 265
+
+## Hardware Resources
+
+Resources opened via `[0x08, 0x0D, handle, resId, 0x00, 0x00]`:
+
+| Resource ID | Size | Contents | Purpose |
+|-------------|------|----------|---------|
+| 0x02 | 138 bytes | 0x39/0x3B values (ASCII '9'/';') | Key calibration data |
+| 0x0F | 6 bytes | `13 00 01 00 60 6d` | **Profile pointer**: version=19, index=1, profileFile=28000 |
+| 0x11 | 70 bytes | "Siil" magic + file ID list | **Master File Allocation Table** |
+| 0x22 | 70 bytes | `FF FF FF FF FF FF 00...` | Empty allocation bitmap |
+| 0x2E | 70 bytes | `FF FF FF FF FF FF 00...` | Empty allocation bitmap |
+| 0x3F | 84,320 bytes | Framebuffer data | **LCD framebuffer** (248×170×2 RGB565) |
+
+Resources 0x00, 0x01 can't be OPEN'd but ARE referenced by config (built-in ROM scenes).
+Resources 0x40-0x7F all fail OPEN with status 6.
+
+### Resource 0x0F (Profile Pointer)
+```
+Offset 0: 0x0013 (19)    — version or count
+Offset 2: 0x0001 (1)     — active profile index
+Offset 4: 0x6D60 (28000) — profile file ID
+```
+
+### Resource 0x11 (Master File Table)
+```
+Offset 0-1: 0xAB5B       — checksum/magic
+Offset 2-3: 0x0021 (33)  — total file count
+Offset 4-7: "Siil"       — filesystem magic
+Offset 8+:  uint16 LE file IDs:
+  15, 28000-28007, 62, 10, 15, 61, 65, 76, 77,
+  32000, 28100-28106, 28200-28203, 28300
+```
+
+### Resource 0x3F (LCD Framebuffer)
+- Size: 84,320 bytes = 248 × 170 × 2 (RGB565 LE)
+- **Read-only in practice**: firmware animation overwrites instantly
+- Writes succeed but data doesn't persist (animation loop overwrites)
+- Even zeroing all settable properties doesn't stop the animation
+- OPEN parameters: 4th byte must be 0x00, 5th byte is ignored
+
+### Display Scene Resources (Built-in, ROM-based)
+| Resource ID | Display Output |
+|-------------|---------------|
+| 0x00 | Corsair logo animation (default) |
+| 0x01 | Blue/purple nebula Corsair logo |
+| 0x02 | Distorted colorful pattern |
+| 0x3F | Corsair logo animation (same as 0x00) |
+
+## File System Architecture
+
+### Key Files
+
+| File ID | Size | Purpose |
+|---------|------|---------|
+| 15 | varies | Profiles list |
+| 61 | varies | Screen resource map |
+| **62** | 4-16 bytes | **Active display config** — determines what LCD shows |
+| 28000 | 70 bytes | Active profile (name, cookie, file references) |
+| 28001 | 94 bytes | Properties file (key-value pairs) |
+| 28002-28005 | varies | Additional profile data |
+| 28006 | 6 bytes | Screen modes layout |
+| **28007** | **4 bytes** | **Default screen config: `38 00 00 00`** |
+| 28100-28106 | varies | Additional device files |
+| 28200-28203 | varies | Image/resource files |
+| 28203 | 163,260 bytes | Factory BMP image (320×170, 24-bit, Corsair format) |
+| 28300 | varies | User image files |
+
+### File 62 (Active Display Config)
+Controls what the LCD displays. Format:
+```
+Byte 0: type (0x38 = static image, 0x66 = GIF, 0x42 = battery widget)
+Byte 1: 0x00
+Bytes 2-3: resourceId (uint16 LE) — HARDWARE RESOURCE ID, NOT file ID
+Bytes 4-15: padding/reserved (optional, can be 4 or 16 bytes total)
+```
+
+**CRITICAL**: On this firmware (Bragi v0), `resourceId` must be a hardware resource ID (0-127).
+File system IDs (28xxx range) produce noise/static (uninitialized VRAM).
+
+### File 28007 (Default Config)
+Factory default: `38 00 00 00` — points to resource 0 (Corsair logo animation)
+
+### File 61 (Screen Resource Map)
+Format:
+```
+Bytes 0-1: header (uint16 LE) — factory default is 0x0000, Web Hub writes 0x0044
+Bytes 2-3: count (uint16 LE) — number of resource map entries
+Per entry (8 bytes):
+  Bytes 0-1: resourceId (uint16 LE)
+  Bytes 2-3: resourceAddress (uint16 LE) — file ID containing image data
+  Bytes 4-7: hash (4 bytes)
+```
+
+### File 28000 (Profile)
+```
+Bytes 0-1: header (format marker)
+Bytes 2-3: profile internal ID (uint16 LE)
+Bytes 4-7: cookie (uint32 LE) — Unix timestamp, used as change signal
+Bytes 8+: file references (28001, 28002, etc.), screen modes layout pointer
+Bytes 30+: profile name (ASCII, null-terminated) — "VANGUARD 96 Default Profile 1"
+```
+
+### File 28001 (Properties)
+```
+Bytes 0-1: header
+Bytes 2-3: count (uint16 LE) — number of property entries
+Per entry (6 bytes):
+  Bytes 0-1: propertyId (uint16 LE)
+  Bytes 2-5: value (4 bytes)
+```
+
+### File 28006 (Screen Modes Layout)
+```
+Bytes 0-1: header (0x37, 0x00)
+Bytes 2-3: row count (uint16 LE) — usually 1
+Per row: count (byte) + fileIds (uint16 LE each)
+```
+Default: `37 00 01 01 67 6d` = header + 1 row + count 1 + fileId 28007
 
 ## Corsair Custom BMP Format
 
@@ -90,8 +243,8 @@ The Web Hub's `convertToBMP` creates images in this format:
 
 ```
 Offset  Content
-0x00    [0x48, 0x00]                — Corsair magic prefix
-0x02    "BM" + standard BMP header  — 54-byte BMP header at offset 2
+0x00    [0x48, 0x00]                — Corsair magic prefix (2 bytes)
+0x02    "BM" + standard BMP header  — 54-byte BMP header
 0x38    Pixel data                  — 24-bit, GRB order (NOT BGR), bottom-up rows
 EOF-4   LE32 timestamp              — 4-byte Unix timestamp appended at end
 ```
@@ -103,132 +256,232 @@ Key differences from standard BMP:
 - Rows are 4-byte aligned (standard BMP padding)
 - Bottom-up row order (standard BMP orientation)
 
-For 248x170 at 24-bit: `2 (prefix) + 54 (header) + 248*3*170 (pixels, ~126K) + padding + 4 (timestamp) ≈ 126,540 bytes`
+Factory BMP (file 28203): 320×170 pixels, 24-bit, 163,260 bytes total.
 
-## V1.5 Protocol (NOT Supported)
+## Web Hub LCD Update Flow (from JS Analysis)
 
-The V1.5 protocol uses 4-byte headers: `[subDevAddr, direction, sessionId, cmdId]`
-
-**Tested and confirmed NOT working on this device:**
-- No response on any of the 4 interfaces
-- Tested all first-byte values (0x00-0x80)
-- Tested both 64-byte and 1024-byte packet sizes
-- BragiVersion property (261) returns 0, confirming no V1.5 support
-
-## Web Hub Device Configuration
-
-From Corsair Web Hub JavaScript (`corsair_webhub_B49DVBx0.js`):
-
-```json
-{
-  "type": "keyboard",
-  "vid": "1b1c",
-  "pid": "2b0d",
-  "displaySupported": true,
-  "screenWidth": 248,
-  "screenHeight": 170,
-  "defaultScreenResources": [28007],
-  "configInHostControl": false,
-  "supportMultiSessionControl": true,
-  "services": ["LightingService", "ControlDialService", "ScreenService", ...]
-}
+### Complete Protocol (from `updateImageScreenAsync`)
+```
+1.  setProperty(3, HOST_CONTROLLED=2)     — switch to host mode
+2.  generateNumberFileID()                 — random file ID for image resource
+3.  updateScreenResourceMap([id], ADD)     — register in file 61
+4.  generateNumberFileID()                 — random file ID for layout config
+5.  createScreenConfig({header:[56,0], resourceId:imageFileId})
+6.  writeFile(layoutFileId, configBytes)   — write layout config
+7.  updateScreenModeProfile(profileId, layoutId, ADD)  — add to file 28006
+8.  updateScreenIndexProperty(profileId, layoutId)     — set property 263 in file 28001
+9.  writeFile(imageFileId, bmpData)        — write Corsair BMP to resource file
+10. updateCookie()                         — write new timestamp to file 28000
+11. setProperty(3, SELF_OPERATED=1)        — switch back, triggers display reload
 ```
 
-## Web Hub LCD Update Flow (from JS analysis)
-
-The Web Hub `changeScreenWidget` function:
-
+### selectWidget(layoutId) — Display Switch
 ```
-1. selectWidget(widgetId):
-   a. readFile(widgetId)                    — read resource file (e.g., 28007)
-   b. writeFile(62, data)                   — write content to active display
-   c. updateScreenIndexProperty(profile, widgetId)  — set property 263
-2. setOperatingMode(SELF_OPERATED)          — transition back to self-operated
+1. readFile(layoutId)                — read config from layout file
+2. writeFile(62, configData)         — write to active display file
+3. updateScreenIndexProperty(...)    — set property 263
+4. setProperty(3, SELF_OPERATED=1)   — in finally block
 ```
 
-`writeFile` internally:
-```
-1. openFile(fileId, bufferIndex=0)
-2. If open fails: unbindBuffers([0]) → createFile(fileId) → openFile(fileId, 0)
-3. writeBufferBegin(data, bufferIndex=0)
-4. writeBuffer(continuationData, bufferIndex=0)  — repeat until done
-5. unbindBuffers([0])                            — always in finally block
-```
+## CRITICAL FINDING: File-Based Rendering Not Supported
 
-`readFile` internally:
-```
-1. openFile(fileId, bufferIndex=0)
-2. describeBuffer(0)                         — get total size
-3. readBuffer(0) in loop                     — read chunks until size reached
-4. unbindBuffers([0])                        — always in finally block
-```
+**This firmware (Bragi v0) cannot render images from file system IDs.**
 
-## Experimental Results
+### Evidence
+Exhaustive testing across 8+ scripts with systematic variation:
 
-### What Works
-- GET/SET properties via Bragi protocol
-- Starting sessions (cmd 0x1B) — returns sessionId=0
-- CREATE, OPEN, WRITE, READ files (28007, etc.)
-- Writing data to file 62 (active display) — **126KB BMP accepted**
-- Mode transitions (SELF_OPERATED ↔ HOST_CONTROLLED)
-- Operating mode changes affect LCD status indicators (lock icon, polling rate)
+| Config resourceId | Resource Map | Cookie | Result |
+|-------------------|-------------|--------|--------|
+| 0x00 (resource) | any | any | **Corsair logo animation** |
+| 0x01 (resource) | any | any | **Nebula Corsair image** |
+| 0x3F (resource) | any | any | **Corsair logo animation** |
+| 28203 (factory BMP) | correct header (0x44) | updated | **NOISE (static)** |
+| 28200 (our BMP) | correct header | updated | **NOISE** |
+| 28300 (test BMP) | correct header | updated | **NOISE** |
+| 60000 (nonexistent) | N/A | N/A | **NOISE** |
+| Any file ID | Any format | Any | **NOISE** |
 
-### What Doesn't Work (Yet)
-- **LCD main image area doesn't update** — Corsair logo animation persists
-- Property 263 (Screen Index) returns no data via GET
-- corsair_lcd_tool protocol (opcode 0x02) — designed for AIO cooler LCDs, not keyboards
-- V1.5 protocol — device doesn't respond
+### Why
+- Config's `resourceId` field is treated as a hardware resource selector (0-127)
+- File IDs (28xxx range) are out of hardware resource range
+- Firmware attempts to read from hardware resource address, gets uninitialized VRAM → noise
+- The animation loop is hardcoded and cannot be stopped via any discovered property or command
+- Resource 0x3F framebuffer writes succeed but animation instantly overwrites
 
-### Observable LCD Changes from Script Execution
-After running `lcd_session_write.py`:
-- Lock icon disappeared from LCD
-- Polling rate indicator changed to 1K
-- Keyboard key backlighting turned on (was off)
-- Main Corsair logo/animation unchanged
+### Implication
+The Web Hub's file-based image upload flow was designed for **newer firmware** that supports mapping file data to display resources. This Bragi v0 firmware only supports built-in ROM-based display scenes selected by hardware resource ID.
 
-These changes confirm the firmware processes our writes and mode transitions.
-
-### Approaches Tested
+## Approaches Tested (Comprehensive)
 
 | Approach | Script | Result |
 |----------|--------|--------|
-| corsair_lcd_tool protocol (opcode 0x02, JPEG) | `lcd_direct_write.py` | No effect — wrong protocol for keyboards |
-| Multiple opcode variants | `lcd_debug_write.py` | No effect |
-| Bragi OPEN resource 0x3F + write | `lcd_jpeg_test.py` | Write succeeds, no display change |
-| Software mode + LCD protocol | `lcd_debug_write.py` | No effect |
-| V1.5 protocol on all interfaces | `lcd_v15_write.py` | No response from device |
-| Bragi file write (file 28007) | `lcd_bragi_file_write.py` | Write succeeds, no display change |
-| Session + file 62 write | `lcd_session_write.py` | **Write succeeds, status icons change** |
+| V1.0 file write to 28007 | `lcd_bragi_file_write.py` | Write OK, no display change |
+| Session + file 62 write | `lcd_session_write.py` | Status icons changed, main area unchanged |
+| Full WebHub flow (8-step) | `lcd_full_flow.py` | NOISE |
+| Cookie fix (correct file 28000) | `lcd_cookie_test.py` | NOISE (4 variations) |
+| Profile path only | `lcd_profile_path.py` | Corsair logo (fallback) |
+| Factory BMP (28203) via config | `lcd_factory_test.py` | NOISE — even known-good factory BMP |
+| Resource 0x00/0x01/0x3F via config | `lcd_factory_test.py` | **WORKS** — built-in scenes display |
+| Resource scan (0-127) | `lcd_resource_scan.py` | 6 openable, only 0x3F has framebuffer |
+| Write RGB565 to 0x3F (SELF mode) | `lcd_framebuffer_race.py` | Animation overwrites instantly |
+| Write to 0x3F (HOST mode, stay) | `lcd_framebuffer_race.py` | Animation overwrites |
+| Write to 0x3F + instant SELF switch | `lcd_framebuffer_race.py` | Animation overwrites |
+| Rapid-fire writes to 0x3F (10x) | `lcd_framebuffer_race.py` | Animation overwrites |
+| Write to resources 0x40-0x7F | `lcd_framebuffer_race.py` | All OPEN fail (status 6) |
+| Control register modification (0x0F, 0x11) | `lcd_control_regs.py` | Write fails (read-only resources) |
+| Zero all settable properties | `lcd_control_regs.py` | Animation continues |
+| V1.5 protocol (4-byte headers) | `lcd_v15_protocol.py` | No response — not supported |
+| Notification endpoint monitoring | `lcd_notification_monitor.py` | Zero notifications |
+| Correct resource map header (0x44) | `lcd_correct_map_header.py` | NOISE — header doesn't matter |
+| Full flow + correct header + factory BMP | `lcd_correct_map_header.py` | NOISE |
+| Copy 28007 to file 62 | `lcd_correct_map_header.py` | **WORKS** — restores default display |
+
+## USB Behavior
+
+Mode transitions (SET property 3) trigger full USB disconnect/re-enumeration:
+1. USB disconnect event
+2. New device number assigned
+3. All 4 interfaces re-probed
+4. New hidraw numbers assigned
+5. Previous file descriptors become invalid
+
+Scripts must handle re-enumeration with reconnect logic (~3-5 second wait).
 
 ## Known Issues and Gotchas
 
-1. **Stale handles**: If a previous script left a buffer/handle open, subsequent OPENs fail with error 0x06. Always close/unbind handles first.
-2. **Packet padding**: Interface 2 expects 1024-byte packets. Using 64-byte packets causes silent failures or error 0x06.
-3. **SET property 0x3E crashes device**: Writing to property 62 causes `OSError: [Errno 71] Protocol error` and USB disconnect. Avoid.
-4. **File 28007 corruption**: Writing large data to file 28007 overwrites the 4-byte config. Must DELETE + CREATE + WRITE to restore.
-5. **hidraw number shifts**: After device crash/reconnect, hidraw numbers change. Use uevent-based device discovery.
+1. **Stale handles**: Previous scripts leaving handles open → OPEN fails with 0x06. Always close all handles first.
+2. **1024-byte packets required**: Interface 2 expects 1024-byte HID reports. Smaller packets cause failures.
+3. **SET property 0x3E crashes device**: Writing to property 62 causes protocol error and USB disconnect.
+4. **DESCRIBE size ambiguity**: resp[5:9] = actual data size, resp[4:8] = allocated/sector size. Use offset 5 first with sanity check.
+5. **Resource 0x0F and 0x11 are read-only**: Writes fail despite successful OPEN.
+6. **Factory reset modes (0x0F cmd)**: All 9 modes return success but no visible effect. Use with caution.
 
-## Next Steps
+## Firmware Analysis (v2.8.59)
 
-1. **Proper image format + file 62 activation sequence**: The write to file 62 succeeded and changed status icons. Need to determine if:
-   - File 62 should contain a 4-byte config pointing to a resource, or the full BMP
-   - A specific property or mode transition triggers the main image refresh
-   - The screen index property (263) needs to be set correctly
-2. **Capture actual Web Hub traffic**: Use usbmon/Wireshark while the Web Hub changes the LCD to see the exact packet sequence
-3. **Firmware update investigation**: BragiVersion=0 may indicate old firmware without full LCD support
-4. **Try HOST_CONTROLLED mode during write, then SELF_OPERATED after** as the refresh trigger
+### Acquisition
+- **CDN**: `https://www.corsair.com/firmware-storage/firmware/public/`
+- **Mapping**: `/mapping.json` → device manifest → firmware zip
+- **Manifest**: `manifests/vanguard-96_1b1c_2b0d_manifest.json`
+- **Firmware**: `fw/VANGUARD96_2.8.59.zip` (1.38MB)
+- **Binary**: `VANGUARD96_App_v2.8.59.bin` (1,819,552 bytes)
+- **Integrity**: SHA-512, CRC32-MPEG2 validation for flashing
+- **Flash method**: Bragi `apply-extended` command in bootloader mode
+
+### MCU Identification: STM32U5A9
+
+Evidence:
+| Factor | Value | Significance |
+|--------|-------|-------------|
+| Initial SP | `0x200D9CF8` | 871KB SRAM used (STM32U5 has 2.5MB) |
+| Flash base | `0x08000000` | Standard STM32 |
+| GPIO addresses | `0x4202xxxx` | STM32U5-specific bus mapping |
+| DMA2D | 7 refs at `0x4C000000` | Chrom-ART 2D graphics accelerator |
+| OCTOSPI1 | `0x44021000` | External flash for resources |
+| Vector table | 132 IRQs max | Matches STM32U5A9 |
+| USB stack | `ux_slave_class_hid` | Azure RTOS USBX |
+| Source path | `../Core/Src/cs_api_LightingSystem/Lightings.c` | Corsair SDK |
+| Filesystem | `Simple File Sys` + `Siil` magic | Custom FS on OCTOSPI flash |
+
+### Active Peripherals (from IRQ vector table)
+- **RTC** (IRQ 2) — real-time clock
+- **TIM1** (IRQ 29-30) — timer capture/compare
+- **TIM2** (IRQ 31) — general timer
+- **EXTI5-7** (IRQ 46-48) — external interrupts (buttons/switches)
+- **SDMMC1** (IRQ 52) — possibly NAND storage
+- **GPDMA1_CH2** (IRQ 59) — DMA for SPI/LCD transfers
+- **OCTOSPI1** (IRQ 73) — external flash
+- **SPI3/LPTIM4** (IRQ 76) — LCD SPI interface
+- **TIM15** (IRQ 85) — animation timing
+- **DMA2D** (IRQ 118) — hardware 2D blitter
+
+### Firmware Memory Layout
+```
+0x000000 - 0x062100  Code + rodata (392KB)
+0x062100 - 0x06261C  TouchGFX bitmap table (66 entries × 20 bytes)
+0x06261C - 0x0B1B30  Font data, key maps, config tables (319KB)
+0x0B1B30 - 0x1BC3A0  Compressed bitmap data (1,066KB)
+```
+
+### Embedded Animation Frames
+- **60 frames** at 248×170, L8 compressed with per-frame CLUT
+- **3 icon bitmaps**: 1× 170×120, 2× 28×28
+- **8 additional** 28×28 icon entries after main table
+- Each frame: ~17.5KB data + 692-byte CLUT (palette)
+- Compression ratio: ~42% of raw L8 (21% of raw RGB565)
+- Total bitmap data: ~1MB (58% of firmware binary)
+- Compression: TouchGFX proprietary L8 with RGB565 CLUT
+
+### TouchGFX Bitmap Table Structure
+```
+Offset from 0x06212C, 20 bytes per entry:
+  [data_ptr:u32]    — flash address of compressed pixel data
+  [extra_ptr:u32]   — flash address of CLUT (Color Look-Up Table)
+  [width:u16]       — pixel width
+  [height:u16]      — pixel height
+  [solid_rect:u32]  — solid rectangle info (x,y pairs)
+  [type_info:u32]   — format/flags (0x60aa20f8 for 248×170 L8)
+```
+
+### Why Animation Can't Be Stopped
+TouchGFX runs its own render loop with hardware DMA2D acceleration. The animation frames are read directly from internal flash by the Chrom-ART DMA engine, bypassing any Bragi file system interaction. This is a hardware-accelerated render pipeline that the Bragi protocol has no control over.
+
+### Compatible Dev Boards (for firmware emulation)
+1. **STM32U5A9J-DK** — exact chip match, has LCD + DMA2D + OCTOSPI + USB (~$80-100)
+2. **NUCLEO-U5A5ZJ-Q** — same peripheral set, no built-in LCD (~$30-40)
+3. **B-U585I-IOT02A** — lower-end U5, has OCTOSPI + USB but no DMA2D (~$55)
+
+### Key Strings Found in Binary
+```
+"CORSAIR VANGUARD 96 Mechanical Gaming Keyboard"
+"VANGUARD 96 Default Profile 1"
+"Simple File Sys "
+"Firmware version: S9"
+"Bootloader"
+"../Core/Src/cs_api_LightingSystem/Lightings.c"
+"../TouchGFX/target/generated/STM32DMA.cpp"
+"ux_slave_class_hid"
+```
+
+## Possible Next Steps
+
+1. **Flash firmware v2.8.59**: May enable file-based LCD rendering (needs explicit user approval)
+2. **Decompress animation frames**: Reverse the TouchGFX L8 compression to extract frame images
+3. **Run firmware on STM32U5A9J-DK**: Dev board emulation for safe experimentation
+4. **Ghidra/radare2 analysis**: Full disassembly to find Bragi command dispatch and display render code
+5. **USB traffic capture**: Use usbmon/Wireshark with iCUE on Windows to capture working LCD update
+6. **SPI flash analysis**: Direct hardware access to the external OCTOSPI flash
 
 ## Scripts Reference
 
 | Script | Purpose |
 |--------|---------|
-| `bragi_probe.py` | General Bragi protocol exploration — property reads, resource enumeration |
-| `lcd_write_test.py` | Early LCD write test via Bragi OPEN/WRITE |
-| `lcd_read_full.py` | Read full contents of LCD resource 0x3F |
-| `lcd_sw_mode_test.py` | Test software mode switching |
-| `lcd_jpeg_test.py` | JPEG image write via Bragi file operations |
-| `lcd_direct_write.py` | corsair_lcd_tool protocol test (opcode 0x02) |
-| `lcd_debug_write.py` | Multi-approach debug test (5 methods) |
-| `lcd_v15_write.py` | V1.5 protocol test |
-| `lcd_bragi_file_write.py` | Bragi file-based write with Web Hub file IDs |
-| `lcd_session_write.py` | **Latest** — session-based write with file 62 |
+| `bragi_probe.py` | General Bragi protocol exploration |
+| `lcd_full_flow.py` | Complete WebHub 8-step update flow |
+| `lcd_cookie_test.py` | Cookie mechanism verification (4 approaches) |
+| `lcd_read_factory.py` | Read factory files with hex dump analysis |
+| `lcd_verify_write.py` | Write/read round-trip integrity verification |
+| `lcd_profile_path.py` | Profile-based vs file 62 display path test |
+| `lcd_factory_test.py` | Systematic config variation (resources vs files) |
+| `lcd_resource_scan.py` | Hardware resource enumeration (0-127) |
+| `lcd_framebuffer_race.py` | Direct framebuffer write timing attacks |
+| `lcd_control_regs.py` | Small resource analysis + property brute-force |
+| `lcd_v15_protocol.py` | V1.5 protocol test + firmware version probe |
+| `lcd_notification_monitor.py` | Second HID endpoint notification monitoring |
+| `lcd_correct_map_header.py` | Resource map header correction test |
+| `webhid_test.html` | WebHID test page for Chrome browser |
+
+## Firmware Files
+
+| File | Purpose |
+|------|---------|
+| `firmware/VANGUARD96_App_v2.8.59.bin` | Firmware binary (1.8MB ARM Cortex-M33) |
+| `firmware/VANGUARD96_App_v2.8.59.json` | Firmware metadata (version, integrity hash) |
+| `VANGUARD96_2.8.59.zip` | Original firmware download from Corsair CDN |
+| `firmware/frames/frame_XX_data.bin` | Extracted compressed animation frame data |
+| `firmware/frames/frame_XX_extra.bin` | Extracted CLUT (palette) data per frame |
+
+## Photo Documentation
+
+All test results photographed in `pics/` subdirectories:
+- `pics/10-full-flow/` through `pics/20-correct-header/`
+- Binary file dumps in `factory_dumps/` and `resource_dumps/`
